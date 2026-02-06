@@ -232,7 +232,7 @@ type FloatingLinesProps = {
   mixBlendMode?: CSSProperties["mixBlendMode"];
 };
 
-function hexToVec3(hex: string): Vector3 {
+function hexToVec3(hex: string) {
   let value = hex.trim();
 
   if (value.startsWith("#")) {
@@ -274,12 +274,12 @@ export default function FloatingLines({
   mixBlendMode = "screen",
 }: FloatingLinesProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
-  const targetMouseRef = useRef<Vector2>(new Vector2(-1000, -1000));
-  const currentMouseRef = useRef<Vector2>(new Vector2(-1000, -1000));
+  const targetMouseRef = useRef(new Vector2(-1000, -1000));
+  const currentMouseRef = useRef(new Vector2(-1000, -1000));
   const targetInfluenceRef = useRef<number>(0);
   const currentInfluenceRef = useRef<number>(0);
-  const targetParallaxRef = useRef<Vector2>(new Vector2(0, 0));
-  const currentParallaxRef = useRef<Vector2>(new Vector2(0, 0));
+  const targetParallaxRef = useRef(new Vector2(0, 0));
+  const currentParallaxRef = useRef(new Vector2(0, 0));
 
   const getLineCount = (waveType: "top" | "middle" | "bottom"): number => {
     if (typeof lineCount === "number") return lineCount;
