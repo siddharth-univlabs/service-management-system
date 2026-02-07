@@ -2,9 +2,13 @@
 
 import { redirect } from "next/navigation";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { cookies } from "next/headers";
+
+const ROLE_COOKIE_NAME = "sms_role";
 
 export async function signIn(formData: FormData) {
   const supabase = await createSupabaseServerClient();
+  const cookieStore = await cookies();
   const email = formData.get("email")?.toString() ?? "";
   const password = formData.get("password")?.toString() ?? "";
 
@@ -67,12 +71,33 @@ export async function signIn(formData: FormData) {
   }
 
   if (role === "ADMIN") {
+    cookieStore.set(ROLE_COOKIE_NAME, role, {
+      httpOnly: true,
+      sameSite: "lax",
+      secure: process.env.NODE_ENV === "production",
+      path: "/",
+      maxAge: 60 * 60 * 24 * 7,
+    });
     redirect("/admin/dashboard");
   }
 
   if (role === "REGIONAL_MANAGER") {
+    cookieStore.set(ROLE_COOKIE_NAME, role, {
+      httpOnly: true,
+      sameSite: "lax",
+      secure: process.env.NODE_ENV === "production",
+      path: "/",
+      maxAge: 60 * 60 * 24 * 7,
+    });
     redirect("/manager/dashboard");
   }
 
+  cookieStore.set(ROLE_COOKIE_NAME, "FIELD_ENGINEER", {
+    httpOnly: true,
+    sameSite: "lax",
+    secure: process.env.NODE_ENV === "production",
+    path: "/",
+    maxAge: 60 * 60 * 24 * 7,
+  });
   redirect("/engineer/dashboard");
 }

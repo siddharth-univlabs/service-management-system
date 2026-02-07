@@ -5,6 +5,8 @@ const ADMIN_PREFIX = "/admin";
 const MANAGER_PREFIX = "/manager";
 const ENGINEER_PREFIX = "/engineer";
 
+const ROLE_COOKIE_NAME = "sms_role";
+
 type CookieToSet = {
   name: string;
   value: string;
@@ -30,6 +32,14 @@ async function fetchRole(
     .single();
 
   return data?.role ?? null;
+}
+
+function readRoleCookie(request: NextRequest) {
+  const value = request.cookies.get(ROLE_COOKIE_NAME)?.value ?? null;
+  if (value === "ADMIN" || value === "REGIONAL_MANAGER" || value === "FIELD_ENGINEER") {
+    return value;
+  }
+  return null;
 }
 
 export async function middleware(request: NextRequest) {
@@ -60,12 +70,14 @@ export async function middleware(request: NextRequest) {
     data: { user },
   } = await supabase.auth.getUser();
 
+  const roleFromCookie = readRoleCookie(request);
+
   if (pathname === "/login") {
     if (!user) {
       return response;
     }
 
-    const role = await fetchRole(supabase, user.id);
+    const role = roleFromCookie ?? (await fetchRole(supabase, user.id));
     if (role === "ADMIN") {
       return NextResponse.redirect(new URL("/admin/dashboard", request.url));
     }
@@ -91,7 +103,7 @@ export async function middleware(request: NextRequest) {
     return NextResponse.redirect(new URL("/login", request.url));
   }
 
-  const role = await fetchRole(supabase, user.id);
+  const role = roleFromCookie ?? (await fetchRole(supabase, user.id));
 
   if (pathname.startsWith(ADMIN_PREFIX) && role !== "ADMIN") {
     if (role === "REGIONAL_MANAGER") {
