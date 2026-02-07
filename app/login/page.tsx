@@ -2,6 +2,7 @@ import Link from "next/link";
 import Button from "@/components/ui/button";
 import Input from "@/components/ui/input";
 import { signIn } from "./actions";
+import PasswordInput from "./password-input";
 
 type LoginPageProps = {
   searchParams?: Promise<{ error?: string; success?: string }>;
@@ -54,13 +55,7 @@ export default async function LoginPage({ searchParams }: LoginPageProps) {
                 placeholder="name@hospital.com"
                 required
               />
-              <Input
-                label="Password"
-                name="password"
-                type="password"
-                placeholder="••••••••"
-                required
-              />
+              <PasswordInput name="password" placeholder="••••••••" required />
               <div className="flex items-center justify-between">
                 <Link className="text-sm text-slate-400" href="/">
                   Back to landing

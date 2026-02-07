@@ -23,40 +23,54 @@ export async function signIn(formData: FormData) {
 
   const { data: profile, error: profileError } = await supabase
     .from("profiles")
-    .select("role, approval_status, is_active")
+    .select("*")
     .eq("user_id", data.user.id)
     .single();
 
-  if (profileError || !profile) {
+  if (profileError) {
+    await supabase.auth.signOut();
+    redirect(`/login?error=${encodeURIComponent(profileError.message)}`);
+  }
+
+  if (!profile) {
     await supabase.auth.signOut();
     redirect("/login?error=Profile%20not%20found");
   }
 
-  if (!profile.is_active) {
+  const role = (profile as any).role as string | null | undefined;
+  const isActive = (profile as any).is_active as boolean | null | undefined;
+  const approvalStatus = (profile as any).approval_status as
+    | "PENDING"
+    | "APPROVED"
+    | "REJECTED"
+    | null
+    | undefined;
+
+  if (isActive === false) {
     await supabase.auth.signOut();
     redirect("/login?error=Account%20is%20deactivated");
   }
 
-  if (profile.approval_status === "PENDING") {
+  if (approvalStatus === "PENDING") {
     await supabase.auth.signOut();
     redirect("/login?error=Application%20under%20process");
   }
 
-  if (profile.approval_status === "REJECTED") {
+  if (approvalStatus === "REJECTED") {
     await supabase.auth.signOut();
     redirect("/login?error=Application%20rejected");
   }
 
-  if (!profile.role) {
+  if (!role) {
     await supabase.auth.signOut();
     redirect("/login?error=Profile%20missing%20role");
   }
 
-  if (profile.role === "ADMIN") {
+  if (role === "ADMIN") {
     redirect("/admin/dashboard");
   }
 
-  if (profile.role === "REGIONAL_MANAGER") {
+  if (role === "REGIONAL_MANAGER") {
     redirect("/manager/dashboard");
   }
 
