@@ -20,6 +20,7 @@ type HospitalRegionRow = {
   id: string;
   region_id: string | null;
   poc: any;
+  image_path: string | null;
 };
 
 type RegionRow = {
@@ -90,7 +91,7 @@ export default async function HospitalsPage() {
       .from("hospital_overview")
       .select("*")
       .order("name", { ascending: true }),
-    supabase.from("hospitals").select("id, region_id, poc"),
+    supabase.from("hospitals").select("id, region_id, poc, image_path"),
     supabase
       .from("regions")
       .select("id, name, code, parent_region_id, is_locked")
@@ -123,6 +124,11 @@ export default async function HospitalsPage() {
 
   const pocByHospitalId = hospitalRegions.reduce<Record<string, any>>((acc, row) => {
     acc[row.id] = row.poc;
+    return acc;
+  }, {});
+
+  const imagePathByHospitalId = hospitalRegions.reduce<Record<string, string | null>>((acc, row) => {
+    acc[row.id] = row.image_path;
     return acc;
   }, {});
 
@@ -177,6 +183,7 @@ export default async function HospitalsPage() {
     const hospitalEngineers = engineersByHospital[hospital.id] ?? [];
     const regionId = regionIdByHospitalId[hospital.id] ?? null;
     const poc = pocByHospitalId[hospital.id] ?? [];
+    const imagePath = imagePathByHospitalId[hospital.id] ?? null;
 
     return {
       ...hospital,
@@ -184,6 +191,7 @@ export default async function HospitalsPage() {
       subregion: deriveSubregion(regionId),
       state: hospital.state ?? null,
       poc,
+      image_path: imagePath,
       devices: hospitalDevices.map((device) => ({
         id: device.id,
         serial_number: device.serial_number,

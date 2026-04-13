@@ -1,24 +1,50 @@
-import type { ReactNode } from "react";
-import { Card } from "./card";
+import React from "react";
 
 type MetricCardProps = {
   label: string;
   value: string;
   helper?: string;
-  icon?: ReactNode;
+  trend?: {
+    direction: "up" | "down" | "neutral";
+    value: string;
+  };
 };
 
-export default function MetricCard({ label, value, helper, icon }: MetricCardProps) {
+export default function MetricCard({
+  label,
+  value,
+  helper,
+  trend,
+}: MetricCardProps) {
   return (
-    <Card className="flex h-full flex-col gap-4 px-6 py-5">
-      <div className="flex items-center justify-between text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">
-        <span>{label}</span>
-        {icon ? <span className="text-slate-400">{icon}</span> : null}
+    <div className="rounded-2xl border border-border bg-card p-6 shadow-sm transition-all hover:shadow-md">
+      <div className="flex flex-col gap-2">
+        <h3 className="text-sm font-medium text-muted uppercase tracking-wider">{label}</h3>
+        <div className="flex items-baseline gap-3">
+          <span className="text-3xl font-semibold tracking-tight text-foreground font-display">
+            {value}
+          </span>
+          {trend ? (
+            <span
+              className={`text-sm font-medium ${
+                trend.direction === "up"
+                  ? "text-brand"
+                  : trend.direction === "down"
+                    ? "text-critical"
+                    : "text-muted"
+              }`}
+            >
+              {trend.direction === "up" ? "↑" : trend.direction === "down" ? "↓" : "→"}{" "}
+              {trend.value}
+            </span>
+          ) : null}
+        </div>
+        {helper ? (
+          <p className="text-xs text-muted leading-relaxed mt-1">
+            {helper}
+          </p>
+        ) : null}
       </div>
-      <div>
-        <p className="text-3xl font-semibold text-slate-100">{value}</p>
-        {helper ? <p className="text-sm text-slate-400">{helper}</p> : null}
-      </div>
-    </Card>
+    </div>
   );
 }

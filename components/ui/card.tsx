@@ -1,51 +1,75 @@
 import type { ReactNode } from "react";
+import * as React from "react";
 
 type CardProps = {
   children: ReactNode;
   className?: string;
 };
 
-export function Card({ children, className }: CardProps) {
-  return (
+const Card = React.forwardRef<HTMLDivElement, CardProps>(
+  ({ children, className, ...props }, ref) => (
     <div
-      className={`rounded-3xl border border-slate-800/70 bg-slate-950/70 shadow-[0_24px_60px_rgba(2,6,23,0.65)] backdrop-blur transition-all duration-200 hover:-translate-y-0.5 hover:border-slate-700/80 ${className ?? ""}`}
+      ref={ref}
+      className={`rounded-2xl border border-border bg-card text-card-foreground shadow-sm ${className || ""}`}
+      {...props}
     >
       {children}
     </div>
-  );
-}
+  )
+);
+Card.displayName = "Card";
 
 type CardSectionProps = {
   children: ReactNode;
   className?: string;
 };
 
-export function CardHeader({ children, className }: CardSectionProps) {
-  return (
-    <div className={`border-b border-slate-800/70 px-6 py-4 ${className ?? ""}`}>
+const CardHeader = React.forwardRef<HTMLDivElement, CardSectionProps>(
+  ({ children, className, ...props }, ref) => (
+    <div
+      ref={ref}
+      className={`flex flex-col space-y-1.5 p-6 border-b border-border/50 ${className || ""}`}
+      {...props}
+    >
       {children}
     </div>
-  );
-}
+  )
+);
+CardHeader.displayName = "CardHeader";
 
-export function CardTitle({ children, className }: CardSectionProps) {
-  return (
+const CardTitle = React.forwardRef<HTMLParagraphElement, CardSectionProps>(
+  ({ children, className, ...props }, ref) => (
     <h3
-      className={`text-sm font-semibold uppercase tracking-[0.18em] text-slate-400 ${className ?? ""}`}
+      ref={ref}
+      className={`font-semibold leading-none tracking-tight text-lg text-foreground font-display ${className || ""}`}
+      {...props}
     >
       {children}
     </h3>
-  );
-}
+  )
+);
+CardTitle.displayName = "CardTitle";
 
-export function CardContent({ children, className }: CardSectionProps) {
-  return <div className={`px-6 py-5 ${className ?? ""}`}>{children}</div>;
-}
-
-export function CardFooter({ children, className }: CardSectionProps) {
-  return (
-    <div className={`border-t border-slate-800/70 px-6 py-4 ${className ?? ""}`}>
+const CardContent = React.forwardRef<HTMLDivElement, CardSectionProps>(
+  ({ children, className, ...props }, ref) => (
+    <div ref={ref} className={`p-6 pt-0 mt-6 ${className || ""}`} {...props}>
       {children}
     </div>
-  );
-}
+  )
+);
+CardContent.displayName = "CardContent";
+
+const CardFooter = React.forwardRef<HTMLDivElement, CardSectionProps>(
+  ({ children, className, ...props }, ref) => (
+    <div
+      ref={ref}
+      className={`border-t border-border/50 p-6 ${className || ""}`}
+      {...props}
+    >
+      {children}
+    </div>
+  )
+);
+CardFooter.displayName = "CardFooter";
+
+export { Card, CardHeader, CardTitle, CardContent, CardFooter };

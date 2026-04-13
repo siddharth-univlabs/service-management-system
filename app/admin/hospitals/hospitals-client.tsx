@@ -65,6 +65,7 @@ type HospitalDetail = {
   subregion?: string | null;
   region_id?: string | null;
   poc?: PocEntry[];
+  image_path?: string | null;
   devices_deployed: number | null;
   engineers_assigned: number | null;
   devices: DeviceDetail[];
@@ -166,6 +167,27 @@ export default function HospitalsClient({
   const [editError, setEditError] = useState<string | null>(null);
   const [isLookingUp, setIsLookingUp] = useState(false);
   const [isEditLookup, setIsEditLookup] = useState(false);
+
+  const [selectedRegionId, setSelectedRegionId] = useState<string | null>(null);
+  const [selectedSubregionId, setSelectedSubregionId] = useState<string | null>(null);
+  const [selectedHospitalId, setSelectedHospitalId] = useState<string | null>(null);
+  const [activeTab, setActiveTab] = useState<"devices" | "team" | "pocs">("devices");
+
+  const [newHospitalImage, setNewHospitalImage] = useState<File | null>(null);
+  const [editHospitalImage, setEditHospitalImage] = useState<File | null>(null);
+
+  const HOSPITAL_IMAGES_BUCKET = "hospital-images";
+
+  const resolveImageSrc = (value: string | null | undefined) => {
+    if (!value) return null;
+    if (value.startsWith("http://") || value.startsWith("https://") || value.startsWith("/")) return value;
+    const normalizedPath = value.startsWith("/") ? value.slice(1) : value;
+    const supabase = createSupabaseBrowserClient();
+    const { data } = supabase.storage.from(HOSPITAL_IMAGES_BUCKET).getPublicUrl(normalizedPath);
+    return data.publicUrl;
+  };
+
+  const chipClipPath = "polygon(0 8%, 4% 0, 96% 0, 100% 8%, 100% 92%, 96% 100%, 4% 100%, 0 92%)";
 
   const filteredHospitals = useMemo(() => {
     const query = searchValue.trim().toLowerCase();
@@ -377,6 +399,19 @@ export default function HospitalsClient({
       return;
     }
 
+    let imagePath: string | null = null;
+    if (newHospitalImage) {
+      const ext = newHospitalImage.name.split(".").pop()?.toLowerCase() || "png";
+      imagePath = `hospitals/${data.id}.${ext}`;
+      const { error: uploadError } = await supabase.storage
+        .from(HOSPITAL_IMAGES_BUCKET)
+        .upload(imagePath, newHospitalImage, { upsert: true });
+
+      if (!uploadError) {
+        await supabase.from("hospitals").update({ image_path: imagePath }).eq("id", data.id);
+      }
+    }
+
     const newHospital: HospitalDetail = {
       id: data.id,
       name: data.name,
@@ -387,6 +422,7 @@ export default function HospitalsClient({
       subregion: selectedSubregionName,
       region_id: data.region_id ?? null,
       poc: (data.poc ?? []) as PocEntry[],
+      image_path: imagePath,
       devices_deployed: 0,
       engineers_assigned: 0,
       devices: [],
@@ -484,6 +520,22 @@ export default function HospitalsClient({
       ? regionById[editFormState.subregionId]?.name ?? null
       : null;
 
+    let imagePath = editingHospital.image_path ?? null;
+
+    if (editHospitalImage) {
+      const ext = editHospitalImage.name.split(".").pop()?.toLowerCase() || "png";
+      imagePath = `hospitals/${editingHospital.id}.${ext}`;
+      const { error: uploadError } = await supabase.storage
+        .from(HOSPITAL_IMAGES_BUCKET)
+        .upload(imagePath, editHospitalImage, { upsert: true });
+
+      if (uploadError) {
+        setEditError(uploadError.message);
+        setIsEditSaving(false);
+        return;
+      }
+    }
+
     const { error: updateError } = await supabase
       .from("hospitals")
       .update({
@@ -493,6 +545,7 @@ export default function HospitalsClient({
         zone: regionById[editFormState.primaryRegionId]?.name ?? null,
         region_id: editFormState.subregionId || editFormState.primaryRegionId,
         poc: normalizedPoc,
+        image_path: imagePath,
       })
       .eq("id", editingHospital.id);
 
@@ -651,39 +704,432 @@ export default function HospitalsClient({
     setIsEditSaving(false);
   };
 
+  // Hierarchical Data Computing
+  const selectedRegion = useMemo(() => regions.find(r => r.id === selectedRegionId), [regions, selectedRegionId]);
+  const selectedSubregion = useMemo(() => regions.find(r => r.id === selectedSubregionId), [regions, selectedSubregionId]);
+  const selectedHospital = useMemo(() => currentHospitals.find(h => h.id === selectedHospitalId), [currentHospitals, selectedHospitalId]);
+
+  const regionStats = useMemo(() => {
+    return primaryRegions.map(region => {
+      const hCount = currentHospitals.filter(h => h.zone === region.name).length;
+      return { ...region, hospitalCount: hCount };
+    });
+  }, [primaryRegions, currentHospitals]);
+
+  const subregionStats = useMemo(() => {
+    if (!selectedRegionId) return [];
+    const subs = subregionsByPrimaryId[selectedRegionId] ?? [];
+    return subs.map(sub => {
+      const hCount = currentHospitals.filter(h => h.region_id === sub.id).length;
+      return { ...sub, hospitalCount: hCount };
+    });
+  }, [selectedRegionId, subregionsByPrimaryId, currentHospitals]);
+
+  const hospitalsInSubregion = useMemo(() => {
+    if (!selectedSubregionId && !selectedRegionId) return [];
+    // If a subregion is selected, show hospitals in that subregion
+    if (selectedSubregionId) {
+      return currentHospitals.filter(h => h.region_id === selectedSubregionId);
+    }
+    // If only a primary region is selected and we want to show hospitals directly (e.g., if there are no subregions)
+    if (selectedRegionId) {
+      return currentHospitals.filter(h => h.zone === selectedRegion?.name);
+    }
+    return [];
+  }, [selectedSubregionId, selectedRegionId, selectedRegion, currentHospitals]);
+
+  const hospitalsDirectlyInRegion = useMemo(() => {
+    if (!selectedRegionId) return [];
+    const subs = subregionsByPrimaryId[selectedRegionId] ?? [];
+    const subIds = new Set(subs.map((s) => s.id));
+    return currentHospitals.filter(
+      (h) =>
+        h.zone === selectedRegion?.name &&
+        (!h.region_id || !subIds.has(h.region_id))
+    );
+  }, [selectedRegionId, selectedRegion, subregionsByPrimaryId, currentHospitals]);
+
   return (
     <div className="space-y-6">
-      <div className="flex flex-col gap-3 rounded-3xl border border-slate-800/70 bg-slate-950/70 p-4 shadow-[0_20px_50px_rgba(2,6,23,0.5)] md:flex-row md:items-end">
-        <Input
-          label="Search"
-          placeholder="Hospital name or city"
-          value={searchValue}
-          onChange={(event) => setSearchValue(event.target.value)}
-        />
-        <Select
-          label="Zone"
-          value={zoneValue}
-          onChange={(event) => setZoneValue(event.target.value)}
-        >
-          <option value="">All zones</option>
-          {primaryRegions.map((region) => (
-            <option key={region.id} value={region.name}>
-              {region.name}
-            </option>
-          ))}
-        </Select>
-        <div className="flex flex-1 items-end justify-between gap-3">
-          <Button variant="secondary" onClick={() => {
-            setSearchValue("");
-            setZoneValue("");
-          }}>
-            Clear filters
-          </Button>
-          <Button onClick={openModal}>Add Hospital</Button>
+      {/* Top search & add bar */}
+      {!selectedHospitalId && (
+        <div className="flex flex-col gap-3 rounded-3xl border border-slate-800/70 bg-slate-950/70 p-4 shadow-[0_20px_50px_rgba(2,6,23,0.5)] md:flex-row md:items-end">
+          <Input
+            label="Search"
+            placeholder="Hospital name or city"
+            value={searchValue}
+            onChange={(event) => setSearchValue(event.target.value)}
+          />
+          <Select
+            label="Zone"
+            value={zoneValue}
+            onChange={(event) => setZoneValue(event.target.value)}
+          >
+            <option value="">All zones</option>
+            {primaryRegions.map((region) => (
+              <option key={region.id} value={region.name}>
+                {region.name}
+              </option>
+            ))}
+          </Select>
+          <div className="flex flex-1 items-end justify-between gap-3">
+            <Button variant="secondary" onClick={() => {
+              setSearchValue("");
+              setZoneValue("");
+            }}>
+              Clear filters
+            </Button>
+            <Button onClick={openModal}>Add Hospital</Button>
+          </div>
         </div>
-      </div>
+      )}
 
-      <HospitalTable hospitals={filteredHospitals} onEdit={openEditModal} />
+      {/* Drilldown Views */}
+      {!selectedRegionId ? (
+        <section className="space-y-4">
+          <div className="flex items-center justify-between">
+            <h3 className="text-lg font-semibold text-slate-100">Regions</h3>
+            <span className="text-xs font-semibold uppercase tracking-[0.3em] text-slate-500">Select a region</span>
+          </div>
+          <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+            {regionStats.map((region) => (
+              <button
+                key={region.id}
+                type="button"
+                onClick={() => {
+                  setSelectedRegionId(region.id);
+                  setSelectedSubregionId(null);
+                  setSelectedHospitalId(null);
+                }}
+                className="group relative overflow-hidden border border-slate-800/80 bg-slate-950/70 text-left shadow-[0_24px_60px_rgba(2,6,23,0.6)] transition-all duration-300 hover:-translate-y-1 hover:border-teal-400/60 flex flex-col min-h-[160px] p-6"
+                style={{ clipPath: chipClipPath }}
+              >
+                <div className="absolute inset-0 bg-linear-to-br from-teal-500/10 via-transparent to-indigo-500/20 opacity-0 transition-opacity duration-300 group-hover:opacity-100" />
+                <div className="flex-1 flex flex-col justify-between relative z-10">
+                  <div>
+                    <p className="text-xs font-semibold uppercase tracking-[0.2em] text-slate-500 mb-1">Region</p>
+                    <p className="text-2xl font-semibold text-slate-100">{region.name}</p>
+                  </div>
+                  <div className="mt-4 flex flex-col">
+                    <span className="text-sm text-slate-400">Hospitals</span>
+                    <span className="text-lg font-medium text-teal-400">{region.hospitalCount}</span>
+                  </div>
+                </div>
+              </button>
+            ))}
+          </div>
+        </section>
+      ) : !selectedSubregionId ? (
+        <section className="space-y-8">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-[0.3em] text-slate-500">Region</p>
+              <h3 className="text-2xl font-semibold text-slate-100">{selectedRegion?.name}</h3>
+            </div>
+            <Button variant="ghost" onClick={() => setSelectedRegionId(null)}>Back to regions</Button>
+          </div>
+
+          <div className="space-y-4">
+            <div className="flex items-center justify-between mt-6">
+              <h3 className="text-lg font-semibold text-slate-100">Subregions</h3>
+              <span className="text-xs font-semibold uppercase tracking-[0.3em] text-slate-500">Select a subregion</span>
+            </div>
+            <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+              {subregionStats.map((subregion) => (
+                <button
+                  key={subregion.id}
+                  type="button"
+                  onClick={() => {
+                    setSelectedSubregionId(subregion.id);
+                    setSelectedHospitalId(null);
+                  }}
+                  className="group relative overflow-hidden border border-slate-800/80 bg-slate-950/70 text-left shadow-[0_24px_60px_rgba(2,6,23,0.6)] transition-all duration-300 hover:-translate-y-1 hover:border-teal-400/60 flex flex-col min-h-[160px] p-6"
+                  style={{ clipPath: chipClipPath }}
+                >
+                  <div className="absolute inset-0 bg-linear-to-br from-teal-500/10 via-transparent to-indigo-500/20 opacity-0 transition-opacity duration-300 group-hover:opacity-100" />
+                  <div className="flex-1 flex flex-col justify-between relative z-10">
+                    <div>
+                      <p className="text-xs font-semibold uppercase tracking-[0.2em] text-slate-500 mb-1">Subregion</p>
+                      <p className="text-xl font-semibold text-slate-100">{subregion.name}</p>
+                    </div>
+                    <div className="mt-4 flex flex-col">
+                      <span className="text-sm text-slate-400">Hospitals</span>
+                      <span className="text-lg font-medium text-teal-400">{subregion.hospitalCount}</span>
+                    </div>
+                  </div>
+                </button>
+              ))}
+              {subregionStats.length === 0 && (
+                <div className="col-span-full rounded-3xl border border-dashed border-slate-800/70 bg-slate-950/60 p-6 text-sm text-slate-400">
+                  No subregions configured for this region.
+                </div>
+              )}
+            </div>
+          </div>
+
+          {hospitalsDirectlyInRegion.length > 0 && (
+            <div className="space-y-4 pt-4 border-t border-slate-800/70">
+              <div className="flex items-center justify-between">
+                <h3 className="text-lg font-semibold text-slate-100">Direct Hospitals</h3>
+                <span className="text-xs font-semibold uppercase tracking-[0.3em] text-slate-500">{hospitalsDirectlyInRegion.length} sites</span>
+              </div>
+              <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+                {hospitalsDirectlyInRegion.map((hospital) => (
+                  <button
+                    key={hospital.id}
+                    type="button"
+                    onClick={() => setSelectedHospitalId(hospital.id)}
+                    className="group relative overflow-hidden border border-slate-800/80 bg-slate-950/70 text-left shadow-[0_24px_60px_rgba(2,6,23,0.6)] transition-all duration-300 hover:-translate-y-1 hover:border-teal-400/60 flex flex-col"
+                    style={{ clipPath: chipClipPath }}
+                  >
+                    <div className="absolute inset-0 bg-linear-to-br from-teal-500/10 via-transparent to-indigo-500/20 opacity-0 transition-opacity duration-300 group-hover:opacity-100" />
+                    {resolveImageSrc(hospital.image_path) ? (
+                      <img
+                        src={resolveImageSrc(hospital.image_path) ?? ""}
+                        alt={hospital.name}
+                        className="h-32 w-full object-cover transition-transform duration-300 group-hover:scale-105"
+                      />
+                    ) : (
+                      <div className="flex h-32 w-full items-center justify-center bg-slate-900/60 text-sm text-slate-400">
+                        No hospital image
+                      </div>
+                    )}
+                    <div className="flex-1 border-t border-slate-800/70 bg-slate-950/80 px-5 py-4 flex flex-col justify-between gap-3 relative z-10">
+                      <div>
+                        <p className="text-lg font-semibold text-slate-100 line-clamp-1">{hospital.name}</p>
+                        <p className="text-xs text-slate-400 line-clamp-1 mt-1">{hospital.city || hospital.address || "No address"}</p>
+                      </div>
+                      <div className="flex items-center gap-4 text-xs font-medium text-slate-300">
+                        <div className="flex flex-col">
+                          <span className="text-slate-500">Devices</span>
+                          <span className="text-teal-400">{hospital.devices_deployed}</span>
+                        </div>
+                        <div className="flex flex-col">
+                          <span className="text-slate-500">Engineers</span>
+                          <span>{hospital.engineers_assigned}</span>
+                        </div>
+                      </div>
+                    </div>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+        </section>
+      ) : !selectedHospitalId ? (
+        <section className="space-y-4">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-[0.3em] text-slate-500">Subregion</p>
+              <h3 className="text-2xl font-semibold text-slate-100">{selectedSubregion?.name}</h3>
+            </div>
+            <Button variant="ghost" onClick={() => setSelectedSubregionId(null)}>Back to subregions</Button>
+          </div>
+          <div className="flex items-center justify-between mt-6">
+            <h3 className="text-lg font-semibold text-slate-100">Hospitals</h3>
+            <span className="text-xs font-semibold uppercase tracking-[0.3em] text-slate-500">{hospitalsInSubregion.length} sites</span>
+          </div>
+          <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+            {hospitalsInSubregion.map((hospital) => (
+              <button
+                key={hospital.id}
+                type="button"
+                onClick={() => setSelectedHospitalId(hospital.id)}
+                className="group relative overflow-hidden border border-slate-800/80 bg-slate-950/70 text-left shadow-[0_24px_60px_rgba(2,6,23,0.6)] transition-all duration-300 hover:-translate-y-1 hover:border-teal-400/60 flex flex-col"
+                style={{ clipPath: chipClipPath }}
+              >
+                <div className="absolute inset-0 bg-linear-to-br from-teal-500/10 via-transparent to-indigo-500/20 opacity-0 transition-opacity duration-300 group-hover:opacity-100" />
+                {resolveImageSrc(hospital.image_path) ? (
+                  <img
+                    src={resolveImageSrc(hospital.image_path) ?? ""}
+                    alt={hospital.name}
+                    className="h-32 w-full object-cover transition-transform duration-300 group-hover:scale-105"
+                  />
+                ) : (
+                  <div className="flex h-32 w-full items-center justify-center bg-slate-900/60 text-sm text-slate-400">
+                    No hospital image
+                  </div>
+                )}
+                <div className="flex-1 border-t border-slate-800/70 bg-slate-950/80 px-5 py-4 flex flex-col justify-between gap-3 relative z-10">
+                  <div>
+                    <p className="text-lg font-semibold text-slate-100 line-clamp-1">{hospital.name}</p>
+                    <p className="text-xs text-slate-400 line-clamp-1 mt-1">{hospital.city || hospital.address || "No address"}</p>
+                  </div>
+                  <div className="flex items-center gap-4 text-xs font-medium text-slate-300">
+                    <div className="flex flex-col">
+                      <span className="text-slate-500">Devices</span>
+                      <span className="text-teal-400">{hospital.devices_deployed}</span>
+                    </div>
+                    <div className="flex flex-col">
+                      <span className="text-slate-500">Engineers</span>
+                      <span>{hospital.engineers_assigned}</span>
+                    </div>
+                  </div>
+                </div>
+              </button>
+            ))}
+            {hospitalsInSubregion.length === 0 && (
+              <div className="col-span-full rounded-3xl border border-dashed border-slate-800/70 bg-slate-950/60 p-6 text-sm text-slate-400">
+                No hospitals found in this subregion.
+              </div>
+            )}
+          </div>
+        </section>
+      ) : (
+        <section className="space-y-4">
+          {selectedHospital && (
+            <>
+              <div className="flex flex-wrap items-center justify-between gap-3 mb-6">
+                <div className="flex items-center gap-4">
+                  {resolveImageSrc(selectedHospital.image_path) && (
+                    <img
+                      src={resolveImageSrc(selectedHospital.image_path) ?? ""}
+                      alt={selectedHospital.name}
+                      className="h-16 w-16 rounded-full object-cover shadow-lg border border-slate-700/50"
+                    />
+                  )}
+                  <div>
+                    <p className="text-xs font-semibold uppercase tracking-[0.3em] text-slate-500">Hospital</p>
+                    <h3 className="text-3xl font-semibold text-slate-100">{selectedHospital.name}</h3>
+                    <p className="text-sm text-slate-400 mt-1">{selectedHospital.address} {selectedHospital.city ? `, ${selectedHospital.city}` : ""}</p>
+                  </div>
+                </div>
+                <div className="flex items-center gap-3">
+                  <Button variant="secondary" onClick={() => openEditModal(selectedHospital)}>Edit Hospital</Button>
+                  <Button variant="ghost" onClick={() => setSelectedHospitalId(null)}>Back to hospitals</Button>
+                </div>
+              </div>
+
+              <div className="rounded-3xl border border-slate-800/70 bg-slate-950/60 p-6 shadow-[0_20px_50px_rgba(2,6,23,0.45)]">
+                <div className="flex space-x-6 border-b border-slate-800/70 mb-6">
+                  <button
+                    onClick={() => setActiveTab("devices")}
+                    className={`pb-3 text-sm font-medium transition-colors ${activeTab === "devices" ? "border-b-2 border-teal-400 text-teal-400" : "text-slate-400 hover:text-slate-200"}`}
+                  >
+                    Devices ({selectedHospital.devices.length})
+                  </button>
+                  <button
+                    onClick={() => setActiveTab("team")}
+                    className={`pb-3 text-sm font-medium transition-colors ${activeTab === "team" ? "border-b-2 border-teal-400 text-teal-400" : "text-slate-400 hover:text-slate-200"}`}
+                  >
+                    Engineers / Sales ({selectedHospital.engineers.length})
+                  </button>
+                  <button
+                    onClick={() => setActiveTab("pocs")}
+                    className={`pb-3 text-sm font-medium transition-colors ${activeTab === "pocs" ? "border-b-2 border-teal-400 text-teal-400" : "text-slate-400 hover:text-slate-200"}`}
+                  >
+                    Point of Contacts ({(selectedHospital.poc ?? []).length})
+                  </button>
+                </div>
+
+                {activeTab === "devices" && (
+                  <div className="overflow-hidden rounded-xl border border-slate-800/80 bg-slate-950/70">
+                    <table className="w-full text-left text-sm">
+                      <thead>
+                        <tr className="border-b border-slate-800/80 bg-slate-900/50">
+                          <th className="h-12 px-6 font-semibold uppercase tracking-wider text-slate-400">Model</th>
+                          <th className="h-12 px-6 font-semibold uppercase tracking-wider text-slate-400">Category</th>
+                          <th className="h-12 px-6 font-semibold uppercase tracking-wider text-slate-400">Serial Number</th>
+                          <th className="h-12 px-6 font-semibold uppercase tracking-wider text-slate-400">Usage</th>
+                          <th className="h-12 px-6 font-semibold uppercase tracking-wider text-slate-400">Status</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {selectedHospital.devices.map((device) => (
+                          <tr key={device.id} className="border-b border-slate-800/50 transition-colors hover:bg-slate-800/30">
+                            <td className="px-6 py-4 font-medium text-slate-200">{device.model_name ?? "N/A"}</td>
+                            <td className="px-6 py-4 text-slate-300">{device.category_name ?? "N/A"}</td>
+                            <td className="px-6 py-4 text-slate-300">{device.serial_number}</td>
+                            <td className="px-6 py-4 text-slate-300">{formatDevicePurpose(device.usage_type)}</td>
+                            <td className="px-6 py-4">
+                              <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${
+                                device.status === "DEPLOYED" ? "bg-teal-500/10 text-teal-400 border border-teal-500/20" : "bg-slate-800 text-slate-300"
+                              }`}>
+                                {formatDeviceStatus(device.status)}
+                              </span>
+                            </td>
+                          </tr>
+                        ))}
+                        {selectedHospital.devices.length === 0 && (
+                          <tr>
+                            <td colSpan={5} className="px-6 py-12 text-center text-slate-400">
+                              No devices deployed here.
+                            </td>
+                          </tr>
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+
+                {activeTab === "team" && (
+                  <div className="overflow-hidden rounded-xl border border-slate-800/80 bg-slate-950/70">
+                    <table className="w-full text-left text-sm">
+                      <thead>
+                        <tr className="border-b border-slate-800/80 bg-slate-900/50">
+                          <th className="h-12 px-6 font-semibold uppercase tracking-wider text-slate-400">Name</th>
+                          <th className="h-12 px-6 font-semibold uppercase tracking-wider text-slate-400">Phone</th>
+                          <th className="h-12 px-6 font-semibold uppercase tracking-wider text-slate-400">Status</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {selectedHospital.engineers.map((engineer) => (
+                          <tr key={engineer.user_id} className="border-b border-slate-800/50 transition-colors hover:bg-slate-800/30">
+                            <td className="px-6 py-4 font-medium text-slate-200">{engineer.full_name ?? "Unnamed"}</td>
+                            <td className="px-6 py-4 text-slate-300">{engineer.phone ?? "N/A"}</td>
+                            <td className="px-6 py-4">
+                              <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${
+                                engineer.is_active ? "bg-teal-500/10 text-teal-400 border border-teal-500/20" : "bg-rose-500/10 text-rose-400 border border-rose-500/20"
+                              }`}>
+                                {engineer.is_active ? "Active" : "Inactive"}
+                              </span>
+                            </td>
+                          </tr>
+                        ))}
+                        {selectedHospital.engineers.length === 0 && (
+                          <tr>
+                            <td colSpan={3} className="px-6 py-12 text-center text-slate-400">
+                              No team members assigned here.
+                            </td>
+                          </tr>
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+
+                {activeTab === "pocs" && (
+                  <div className="overflow-hidden rounded-xl border border-slate-800/80 bg-slate-950/70">
+                    <table className="w-full text-left text-sm">
+                      <thead>
+                        <tr className="border-b border-slate-800/80 bg-slate-900/50">
+                          <th className="h-12 px-6 font-semibold uppercase tracking-wider text-slate-400">Name</th>
+                          <th className="h-12 px-6 font-semibold uppercase tracking-wider text-slate-400">Phone</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {(selectedHospital.poc ?? []).map((poc, idx) => (
+                          <tr key={idx} className="border-b border-slate-800/50 transition-colors hover:bg-slate-800/30">
+                            <td className="px-6 py-4 font-medium text-slate-200">{poc.name}</td>
+                            <td className="px-6 py-4 text-slate-300">{poc.phone}</td>
+                          </tr>
+                        ))}
+                        {(selectedHospital.poc ?? []).length === 0 && (
+                          <tr>
+                            <td colSpan={2} className="px-6 py-12 text-center text-slate-400">
+                              No Points of Contact defined.
+                            </td>
+                          </tr>
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+            </>
+          )}
+        </section>
+      )}
 
       {isModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 px-4 py-6">
@@ -714,6 +1160,31 @@ export default function HospitalsClient({
                 }
                 required
               />
+                
+              <div className="flex flex-col gap-1.5">
+                <label className="text-xs font-semibold uppercase tracking-[0.2em] text-slate-400">
+                  Hospital Photo
+                </label>
+                <div className="flex items-center gap-3">
+                  <input
+                    type="file"
+                    id="hospitalImage"
+                    accept="image/*"
+                    onChange={(e) => setNewHospitalImage(e.target.files?.[0] ?? null)}
+                    className="hidden"
+                  />
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    onClick={() => document.getElementById("hospitalImage")?.click()}
+                    className="w-full justify-start text-left font-normal h-10 border border-slate-700/50 bg-slate-900/50"
+                  >
+                    <span className="truncate text-slate-300">
+                      {newHospitalImage ? newHospitalImage.name : "Upload image (optional)"}
+                    </span>
+                  </Button>
+                </div>
+              </div>
 
               <div className="rounded-2xl border border-slate-800/70 bg-slate-950/60 p-4 md:col-span-2">
                 <div className="flex flex-wrap items-start justify-between gap-3">
@@ -974,6 +1445,31 @@ export default function HospitalsClient({
                   }))
                 }
               />
+                
+              <div className="flex flex-col gap-1.5">
+                <label className="text-xs font-semibold uppercase tracking-[0.2em] text-slate-400">
+                  Hospital Photo
+                </label>
+                <div className="flex items-center gap-3">
+                  <input
+                    type="file"
+                    id="editHospitalImage"
+                    accept="image/*"
+                    onChange={(e) => setEditHospitalImage(e.target.files?.[0] ?? null)}
+                    className="hidden"
+                  />
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    onClick={() => document.getElementById("editHospitalImage")?.click()}
+                    className="w-full justify-start text-left font-normal h-10 border border-slate-700/50 bg-slate-900/50"
+                  >
+                    <span className="truncate text-slate-300">
+                      {editHospitalImage ? editHospitalImage.name : editingHospital.image_path ? "Replace existing image" : "Upload image (optional)"}
+                    </span>
+                  </Button>
+                </div>
+              </div>
 
               <div className="rounded-2xl border border-slate-800/70 bg-slate-950/60 p-4 md:col-span-2">
                 <div className="flex flex-wrap items-start justify-between gap-3">

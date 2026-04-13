@@ -15,6 +15,7 @@ type InventoryModelRow = {
   model_id: string;
   model_name: string;
   category: string;
+  project_id: string | null;
   total: number;
   in_inventory: number;
   deployed: number;
@@ -31,12 +32,23 @@ type ModelDetailRow = {
   model_code: string | null;
   manufacturer: string | null;
   description: string | null;
-  category: { name: string | null } | { name: string | null }[] | null;
+  category: {
+    name: string | null;
+    project_device_categories: { project_id: string }[];
+  } | null;
+};
+
+type ProjectRow = {
+  id: string;
+  name: string;
+  description: string | null;
+  image_path: string | null;
 };
 
 export default async function InventoryPage() {
   const supabase = await createSupabaseServerClient();
-  const [summaryResult, modelResult, modelDetailsResult] = await Promise.all([
+
+  const [summaryResult, modelResult, modelDetailsResult, projectsResult] = await Promise.all([
     supabase.from("inventory_summary").select("*").single(),
     supabase
       .from("inventory_by_model")
@@ -44,8 +56,12 @@ export default async function InventoryPage() {
       .order("model_name", { ascending: true }),
     supabase
       .from("device_models")
-      .select("id, model_name, model_code, manufacturer, description, category:category_id(name)")
+      .select("id, model_name, model_code, manufacturer, description, category:category_id(name, project_device_categories(project_id))")
       .order("model_name", { ascending: true }),
+    supabase
+      .from("projects")
+      .select("id, name, description, image_path")
+      .order("name", { ascending: true }),
   ]);
 
   const summary =
@@ -65,18 +81,23 @@ export default async function InventoryPage() {
     return value ?? null;
   };
 
-  const modelDetails = (modelDetailsResult.data ?? []) as ModelDetailRow[];
+  const modelDetails = (modelDetailsResult.data ?? []) as unknown as ModelDetailRow[];
   const modelDetailMap = new Map(
     modelDetails.map((detail) => [detail.id, detail])
   );
 
+  const projects = (projectsResult.data ?? []) as ProjectRow[];
+
   const rows: InventoryModelRow[] = (modelResult.data ?? []).map((row: any) => {
     const detail = modelDetailMap.get(row.model_id);
+    const categoryRel = normalizeRelation(detail?.category) as { name: string | null; project_device_categories: { project_id: string }[] } | null;
+    const projectId = categoryRel?.project_device_categories?.[0]?.project_id ?? null;
+
     return {
       model_id: row.model_id,
       model_name: detail?.model_name ?? row.model_name,
-      category:
-        normalizeRelation(detail?.category)?.name ?? row.category ?? "Uncategorized",
+      category: categoryRel?.name ?? row.category ?? "Uncategorized",
+      project_id: projectId,
       total: row.total,
       in_inventory: row.in_inventory,
       deployed: row.deployed,
@@ -119,7 +140,7 @@ export default async function InventoryPage() {
         />
       </section>
 
-      <InventoryClient rows={rows} />
+      <InventoryClient rows={rows} projects={projects} />
     </div>
   );
 }

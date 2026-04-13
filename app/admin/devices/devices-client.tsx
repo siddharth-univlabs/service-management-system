@@ -35,10 +35,18 @@ type DeviceRow = {
   } | null;
 };
 
+type ProjectRow = {
+  id: string;
+  name: string;
+  description: string | null;
+  image_path: string | null;
+};
+
 type CategoryRow = {
   id: string;
   name: string;
   image_path: string | null;
+  project_id: string | null;
 };
 
 type DeviceModelRow = {
@@ -52,9 +60,11 @@ type DeviceModelRow = {
 };
 
 type DevicesClientProps = {
+  projects: ProjectRow[];
   categories: CategoryRow[];
   models: DeviceModelRow[];
   devices: DeviceRow[];
+  initialProjectId?: string | null;
   initialCategory?: string | null;
   initialModelId?: string | null;
 };
@@ -119,6 +129,7 @@ const chipClipPath =
   "polygon(0 8%, 4% 0, 96% 0, 100% 8%, 100% 92%, 96% 100%, 4% 100%, 0 92%)";
 
 const CATEGORY_IMAGES_BUCKET = "category-images";
+const PROJECT_IMAGES_BUCKET = "project-images";
 
 const resolveCategoryImageSrc = (value: string | null) => {
   if (!value) return null;
@@ -132,10 +143,24 @@ const resolveCategoryImageSrc = (value: string | null) => {
   return data.publicUrl;
 };
 
+const resolveProjectImageSrc = (value: string | null) => {
+  if (!value) return null;
+  if (value.startsWith("http://") || value.startsWith("https://") || value.startsWith("/")) {
+    return value;
+  }
+
+  const normalizedPath = value.startsWith("/") ? value.slice(1) : value;
+  const supabase = createSupabaseBrowserClient();
+  const { data } = supabase.storage.from(PROJECT_IMAGES_BUCKET).getPublicUrl(normalizedPath);
+  return data.publicUrl;
+};
+
 export default function DevicesClient({
+  projects,
   categories,
   models,
   devices,
+  initialProjectId,
   initialCategory,
   initialModelId,
 }: DevicesClientProps) {
@@ -145,12 +170,29 @@ export default function DevicesClient({
     return models.find((model) => model.id === initialModelId) ?? null;
   }, [models, initialModelId]);
 
-  const [selectedCategory, setSelectedCategory] = useState<string | null>(
-    initialModel?.category_name ?? initialCategory ?? null
+  const initialCat = useMemo(() => {
+    const catName = initialModel?.category_name ?? initialCategory;
+    if (!catName) return null;
+    return categories.find(c => c.name === catName) ?? null;
+  }, [initialModel, initialCategory, categories]);
+
+  const [selectedProjectId, setSelectedProjectId] = useState<string | null>(
+    initialProjectId ?? initialCat?.project_id ?? null
   );
+
+  const [selectedCategory, setSelectedCategory] = useState<string | null>(
+    initialCat?.name ?? null
+  );
+  
   const [selectedModelId, setSelectedModelId] = useState<string | null>(
     initialModel ? initialModel.id : null
   );
+
+  // Filter categories by selected project
+  const filteredCategories = useMemo(() => {
+    if (!selectedProjectId) return [];
+    return categories.filter(c => c.project_id === selectedProjectId);
+  }, [categories, selectedProjectId]);
 
   const [isAddCategoryOpen, setIsAddCategoryOpen] = useState(false);
   const [isAddSkuOpen, setIsAddSkuOpen] = useState(false);
@@ -220,7 +262,6 @@ export default function DevicesClient({
     setNewCategoryName("");
     setNewCategoryDescription("");
     setNewCategoryImage(null);
-    setNewSkus([{ model_name: "", manufacturer: "", model_code: "", description: "", specs: "" }]);
     setIsAddCategoryOpen(true);
   };
 
@@ -393,36 +434,16 @@ export default function DevicesClient({
     router.refresh();
   };
 
-  const handleCreateCategory = async () => {
+  const handleAddCategory = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!selectedProjectId) {
+      setAddCategoryError("Project must be selected to add a category.");
+      return;
+    }
+
     const name = newCategoryName.trim();
     if (!name) {
       setAddCategoryError("Category name is required.");
-      return;
-    }
-
-    const trimmedSkus = newSkus
-      .map((sku) => ({
-        model_name: sku.model_name.trim(),
-        manufacturer: sku.manufacturer.trim(),
-        model_code: sku.model_code.trim(),
-        description: sku.description.trim(),
-        specs: sku.specs.trim(),
-      }))
-      .filter((sku) => sku.model_name);
-
-    if (!trimmedSkus.length) {
-      setAddCategoryError("Add at least one SKU (model name).");
-      return;
-    }
-
-    if (trimmedSkus.some((sku) => !sku.model_code)) {
-      setAddCategoryError("All SKUs must have a SKU code.");
-      return;
-    }
-
-    const invalidSpecsSku = trimmedSkus.find((sku) => sku.specs && !isValidJson(sku.specs));
-    if (invalidSpecsSku) {
-      setAddCategoryError("Specs must be valid JSON.");
       return;
     }
 
@@ -431,23 +452,44 @@ export default function DevicesClient({
 
     const supabase = createSupabaseBrowserClient();
 
-    const { data: category, error: categoryError } = await supabase
+    // Try to find existing category first to handle unique constraint
+    const { data: existingCategory } = await supabase
       .from("device_categories")
-      .insert({ name, description: newCategoryDescription.trim() || null })
       .select("id")
+      .ilike("name", name)
       .single();
 
-    if (categoryError || !category) {
-      setAddCategoryError(categoryError?.message ?? "Unable to create category.");
-      setIsSavingCategory(false);
-      return;
+    let categoryId = existingCategory?.id;
+
+    if (!categoryId) {
+      const { data: newCategory, error: categoryError } = await supabase
+        .from("device_categories")
+        .insert({ name, description: newCategoryDescription.trim() || null })
+        .select("id")
+        .single();
+
+      if (categoryError || !newCategory) {
+        setAddCategoryError(`Failed to save category: ${categoryError?.message || "Unknown error"}`);
+        setIsSavingCategory(false);
+        return;
+      }
+      categoryId = newCategory.id;
+    }
+
+    // Link category to selected project
+    const { error: mappingError } = await supabase
+      .from("project_device_categories")
+      .insert({ project_id: selectedProjectId, category_id: categoryId });
+
+    if (mappingError && mappingError.code !== "23505") { // Ignore if already linked
+      console.error("Failed to link category to project:", mappingError);
     }
 
     let imagePath: string | null = null;
 
-    if (newCategoryImage) {
+    if (newCategoryImage && categoryId) {
       const ext = newCategoryImage.name.split(".").pop()?.toLowerCase() || "png";
-      imagePath = `device-categories/${category.id}.${ext}`;
+      imagePath = `device-categories/${categoryId}.${ext}`;
 
       const { error: uploadError } = await supabase.storage
         .from(CATEGORY_IMAGES_BUCKET)
@@ -462,30 +504,13 @@ export default function DevicesClient({
       const { error: updateError } = await supabase
         .from("device_categories")
         .update({ image_path: imagePath })
-        .eq("id", category.id);
+        .eq("id", categoryId);
 
       if (updateError) {
         setAddCategoryError(updateError.message);
         setIsSavingCategory(false);
         return;
       }
-    }
-
-    const { error: skuError } = await supabase.from("device_models").insert(
-      trimmedSkus.map((sku) => ({
-        category_id: category.id,
-        model_name: sku.model_name,
-        manufacturer: sku.manufacturer || null,
-        model_code: sku.model_code,
-        description: sku.description || null,
-        specs: sku.specs ? JSON.parse(sku.specs) : null,
-      }))
-    );
-
-    if (skuError) {
-      setAddCategoryError(skuError.message);
-      setIsSavingCategory(false);
-      return;
     }
 
     setIsSavingCategory(false);
@@ -495,8 +520,83 @@ export default function DevicesClient({
 
   return (
     <div className="space-y-6">
-      {!selectedCategory ? (
+      {!selectedProjectId ? (
         <section className="space-y-4">
+          <div className="flex items-center justify-between">
+            <h3 className="text-lg font-semibold text-slate-100">
+              Projects
+            </h3>
+            <span className="text-xs font-semibold uppercase tracking-[0.3em] text-slate-500">
+              Select a project
+            </span>
+          </div>
+          <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+            {projects.map((project) => (
+              <button
+                key={project.id}
+                type="button"
+                onClick={() => {
+                  setSelectedProjectId(project.id);
+                  setSelectedCategory(null);
+                  setSelectedModelId(null);
+                }}
+                className="group relative overflow-hidden border border-slate-800/80 bg-slate-950/70 text-left shadow-[0_24px_60px_rgba(2,6,23,0.6)] transition-all duration-300 hover:-translate-y-1 hover:border-teal-400/60"
+                style={{ clipPath: chipClipPath }}
+              >
+                <div className="absolute inset-0 bg-linear-to-br from-teal-500/10 via-transparent to-indigo-500/20 opacity-0 transition-opacity duration-300 group-hover:opacity-100" />
+                {resolveProjectImageSrc(project.image_path) ? (
+                  <img
+                    src={resolveProjectImageSrc(project.image_path) ?? ""}
+                    alt={project.name}
+                    className="h-44 w-full object-cover transition-transform duration-300 group-hover:scale-105"
+                  />
+                ) : (
+                  <div className="flex h-44 w-full items-center justify-center bg-slate-900/60 text-sm text-slate-400">
+                    No image
+                  </div>
+                )}
+                <div className="border-t border-slate-800/70 bg-slate-950/80 px-5 py-4">
+                  <p className="text-lg font-semibold text-slate-100">{project.name}</p>
+                </div>
+              </button>
+            ))}
+            <button
+              type="button"
+              onClick={() => router.push("/admin/projects")}
+              className="group relative flex flex-col items-center justify-center gap-3 overflow-hidden rounded-3xl border border-dashed border-slate-700/70 bg-slate-950/40 px-6 py-10 text-center text-sm text-slate-300 shadow-[0_24px_60px_rgba(2,6,23,0.55)] transition-all duration-300 hover:-translate-y-1 hover:border-teal-400/60"
+            >
+              <div className="flex h-14 w-14 items-center justify-center rounded-full border border-slate-700/70 bg-slate-950/70 text-2xl text-slate-100 transition group-hover:border-teal-400/60">
+                +
+              </div>
+              <div>
+                <p className="text-base font-semibold text-slate-100">Manage projects</p>
+                <p className="mt-1 text-xs text-slate-400">Go to projects page</p>
+              </div>
+            </button>
+          </div>
+        </section>
+      ) : !selectedCategory ? (
+        <section className="space-y-4">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-[0.3em] text-slate-500">
+                Project
+              </p>
+              <h3 className="text-2xl font-semibold text-slate-100">
+                {projects.find(p => p.id === selectedProjectId)?.name}
+              </h3>
+            </div>
+            <Button
+              variant="ghost"
+              onClick={() => {
+                setSelectedProjectId(null);
+                setSelectedCategory(null);
+                setSelectedModelId(null);
+              }}
+            >
+              Back to projects
+            </Button>
+          </div>
           <div className="flex items-center justify-between">
             <h3 className="text-lg font-semibold text-slate-100">
               Device Categories
@@ -506,7 +606,7 @@ export default function DevicesClient({
             </span>
           </div>
           <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-            {categories.map((category) => (
+            {filteredCategories.map((category) => (
               <button
                 key={category.id}
                 type="button"
@@ -550,7 +650,7 @@ export default function DevicesClient({
             </button>
           </div>
         </section>
-      ) : (
+      ) : !selectedModelId ? (
         <section className="space-y-4">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
@@ -570,6 +670,15 @@ export default function DevicesClient({
             >
               Back to categories
             </Button>
+          </div>
+
+          <div className="flex items-center justify-between mt-8">
+            <h3 className="text-lg font-semibold text-slate-100">
+              Device Models
+            </h3>
+            <span className="text-xs font-semibold uppercase tracking-[0.3em] text-slate-500">
+              SKUs
+            </span>
           </div>
 
           {filteredModels.length ? (
@@ -593,7 +702,7 @@ export default function DevicesClient({
                       event.stopPropagation();
                       openEditSku(model);
                     }}
-                    className="absolute right-4 top-4 inline-flex items-center justify-center rounded-full border border-slate-800/80 bg-slate-950/60 px-3 py-2 text-xs font-semibold text-slate-200 transition hover:border-slate-600"
+                    className="absolute right-4 top-4 z-10 inline-flex items-center justify-center rounded-full border border-slate-800/80 bg-slate-950/60 px-3 py-2 text-xs font-semibold text-slate-200 transition hover:border-slate-600"
                     aria-label="Edit SKU"
                     title="Edit SKU"
                   >
@@ -625,15 +734,151 @@ export default function DevicesClient({
                 </div>
                 <div>
                   <p className="text-base font-semibold text-slate-100">Add another SKU</p>
-                  <p className="mt-1 text-xs text-slate-400">Create a new SKU code under this category</p>
+                  <p className="mt-1 text-xs text-slate-400">Create a new SKU code</p>
                 </div>
               </button>
             </div>
           ) : (
-            <div className="rounded-3xl border border-dashed border-slate-800/70 bg-slate-950/60 p-6 text-sm text-slate-400">
-              No SKUs found for this category yet.
+            <div className="rounded-3xl border border-dashed border-slate-800/70 bg-slate-950/60 p-6 text-center text-sm text-slate-400">
+              <p>No SKUs found for this category yet.</p>
+              <Button variant="secondary" className="mt-4" onClick={openAddSku}>
+                Add First SKU
+              </Button>
             </div>
           )}
+        </section>
+      ) : (
+        <section className="space-y-4">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-[0.3em] text-slate-500">
+                SKU
+              </p>
+              <h3 className="text-2xl font-semibold text-slate-100">
+                {selectedModel?.model_name}
+              </h3>
+            </div>
+            <Button
+              variant="ghost"
+              onClick={() => setSelectedModelId(null)}
+            >
+              Back to SKUs
+            </Button>
+          </div>
+          
+          <div className="mt-8 flex items-center justify-between">
+            <h3 className="text-lg font-semibold text-slate-100">
+              Serialized Devices
+            </h3>
+            <span className="text-xs font-semibold uppercase tracking-[0.3em] text-slate-500">
+              Inventory List
+            </span>
+          </div>
+
+          <div className="mt-4 overflow-hidden rounded-3xl border border-slate-800/80 bg-slate-950/70 shadow-[0_30px_80px_rgba(2,6,23,0.6)]">
+            <div className="overflow-x-auto">
+              <Table>
+                <TableHeader>
+                  <TableRow className="border-slate-800/80 bg-slate-900/50 hover:bg-slate-900/50">
+                    <th className="h-12 px-6 text-xs font-semibold uppercase tracking-wider text-slate-400 text-left">
+                      Serial No
+                    </th>
+                    <th className="h-12 px-6 text-xs font-semibold uppercase tracking-wider text-slate-400 text-left">
+                      Status
+                    </th>
+                    <th className="h-12 px-6 text-xs font-semibold uppercase tracking-wider text-slate-400 text-left">
+                      Ownership
+                    </th>
+                    <th className="h-12 px-6 text-xs font-semibold uppercase tracking-wider text-slate-400 text-left">
+                      Usage
+                    </th>
+                    <th className="h-12 px-6 text-xs font-semibold uppercase tracking-wider text-slate-400 text-left">
+                      Location
+                    </th>
+                    <th className="h-12 px-6 text-xs font-semibold uppercase tracking-wider text-slate-400 text-left">
+                      Actions
+                    </th>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {filteredDevices.length === 0 ? (
+                    <TableRow className="hover:bg-transparent">
+                      <TableCell
+                        colSpan={6}
+                        className="h-32 px-6 text-center text-sm text-slate-400"
+                      >
+                        No devices found for {selectedModel?.model_name}.
+                      </TableCell>
+                    </TableRow>
+                  ) : (
+                    filteredDevices.map((device) => {
+                      const isHospital = device.current_location_type === "HOSPITAL";
+                      const locationName = isHospital
+                        ? device.current_hospital?.name ?? "Unknown Hospital"
+                        : device.current_warehouse?.name ?? "Unknown Warehouse";
+
+                      const st = deviceStatusTone(device.status);
+                      const isDemo = device.usage_type === "DEMO";
+                      const dt = isDemo && device.demo_status ? demoStatusTone(device.demo_status) : null;
+
+                      return (
+                        <TableRow
+                          key={device.id}
+                          className="border-slate-800/50 transition-colors hover:bg-slate-800/30"
+                        >
+                          <TableCell className="px-6 py-4">
+                            <span className="font-mono text-sm font-medium text-slate-200">
+                              {device.serial_number}
+                            </span>
+                          </TableCell>
+                          <TableCell className="px-6 py-4">
+                            <div className="flex flex-col items-start gap-2">
+                              <Badge tone={st}>{device.status.replace(/_/g, " ")}</Badge>
+                              {isDemo && device.demo_status && dt && (
+                                <Badge tone={dt}>Demo: {device.demo_status.replace(/_/g, " ")}</Badge>
+                              )}
+                            </div>
+                          </TableCell>
+                          <TableCell className="px-6 py-4">
+                            <span className="text-sm text-slate-300">
+                              {device.ownership_type}
+                            </span>
+                          </TableCell>
+                          <TableCell className="px-6 py-4">
+                            <span className="text-sm text-slate-300">
+                              {device.usage_type}
+                            </span>
+                          </TableCell>
+                          <TableCell className="px-6 py-4">
+                            <span className="text-sm text-slate-300">
+                              {locationName}
+                            </span>
+                          </TableCell>
+                          <TableCell className="px-6 py-4">
+                            <Button
+                              variant="secondary"
+                              onClick={() => router.push(`/engineer/devices/${device.id}`)}
+                              className="h-8 border-slate-700/70 bg-slate-900/50 text-xs text-slate-300 hover:bg-slate-800/80 hover:text-slate-100"
+                            >
+                              View Details
+                            </Button>
+                          </TableCell>
+                        </TableRow>
+                      );
+                    })
+                  )}
+                </TableBody>
+              </Table>
+            </div>
+            <div className="border-t border-slate-800/80 bg-slate-950/80 px-6 py-4">
+              <Button
+                onClick={() => router.push(`/admin/inventory/new?model_id=${selectedModelId}`)}
+                className="w-full bg-cyan-600/20 text-cyan-400 hover:bg-cyan-600/30 sm:w-auto"
+              >
+                + Register New Device
+              </Button>
+            </div>
+          </div>
         </section>
       )}
 
@@ -895,7 +1140,7 @@ export default function DevicesClient({
             <div className="flex flex-wrap items-start justify-between gap-4">
               <div>
                 <p className="text-xs font-semibold uppercase tracking-[0.3em] text-slate-500">
-                  Add category
+                  Add Category
                 </p>
                 <h3 className="mt-2 text-2xl font-semibold text-slate-100">New Device Category</h3>
                 <p className="text-sm text-slate-400">Upload an image and add SKUs under this category.</p>
@@ -947,146 +1192,6 @@ export default function DevicesClient({
               </div>
             </div>
 
-            <div className="mt-8 space-y-3">
-              <div className="flex flex-wrap items-center justify-between gap-3">
-                <div>
-                  <p className="text-xs font-semibold uppercase tracking-[0.3em] text-slate-500">SKUs</p>
-                  <h4 className="mt-1 text-lg font-semibold text-slate-100">Add SKUs for this category</h4>
-                </div>
-                <Button
-                  type="button"
-                  variant="secondary"
-                  onClick={() =>
-                    setNewSkus((prev) => [
-                      ...prev,
-                      {
-                        model_name: "",
-                        manufacturer: "",
-                        model_code: "",
-                        description: "",
-                        specs: "",
-                      },
-                    ])
-                  }
-                >
-                  Add SKU
-                </Button>
-              </div>
-
-              <div className="space-y-3">
-                {newSkus.map((sku, index) => (
-                  <div
-                    key={index}
-                    className="rounded-3xl border border-slate-800/70 bg-slate-950/70 p-4"
-                  >
-                    <div className="flex flex-wrap items-center justify-between gap-3">
-                      <p className="text-sm font-semibold text-slate-200">SKU #{index + 1}</p>
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        onClick={() =>
-                          setNewSkus((prev) =>
-                            prev.length === 1 ? prev : prev.filter((_, i) => i !== index)
-                          )
-                        }
-                        disabled={newSkus.length === 1}
-                      >
-                        Remove
-                      </Button>
-                    </div>
-
-                    <div className="mt-4 grid gap-4 md:grid-cols-2">
-                      <label className="flex flex-col gap-2 text-sm font-medium text-slate-300">
-                        <span>Model name</span>
-                        <input
-                          value={sku.model_name}
-                          onChange={(event) =>
-                            setNewSkus((prev) =>
-                              prev.map((entry, i) =>
-                                i === index
-                                  ? { ...entry, model_name: event.target.value }
-                                  : entry
-                              )
-                            )
-                          }
-                          className="w-full rounded-2xl border border-slate-800/80 bg-slate-950/70 px-4 py-3 text-sm text-slate-100 focus:border-teal-400 focus:outline-none"
-                          placeholder="e.g. Iris Infusion Pump"
-                          required
-                        />
-                      </label>
-                      <label className="flex flex-col gap-2 text-sm font-medium text-slate-300">
-                        <span>Manufacturer</span>
-                        <input
-                          value={sku.manufacturer}
-                          onChange={(event) =>
-                            setNewSkus((prev) =>
-                              prev.map((entry, i) =>
-                                i === index
-                                  ? { ...entry, manufacturer: event.target.value }
-                                  : entry
-                              )
-                            )
-                          }
-                          className="w-full rounded-2xl border border-slate-800/80 bg-slate-950/70 px-4 py-3 text-sm text-slate-100 focus:border-teal-400 focus:outline-none"
-                          placeholder="Optional"
-                        />
-                      </label>
-                      <label className="flex flex-col gap-2 text-sm font-medium text-slate-300">
-                        <span>Model code</span>
-                        <input
-                          value={sku.model_code}
-                          onChange={(event) =>
-                            setNewSkus((prev) =>
-                              prev.map((entry, i) =>
-                                i === index
-                                  ? { ...entry, model_code: event.target.value }
-                                  : entry
-                              )
-                            )
-                          }
-                          className="w-full rounded-2xl border border-slate-800/80 bg-slate-950/70 px-4 py-3 text-sm text-slate-100 focus:border-teal-400 focus:outline-none"
-                          placeholder="Required"
-                          required
-                        />
-                      </label>
-                      <label className="flex flex-col gap-2 text-sm font-medium text-slate-300">
-                        <span>Description</span>
-                        <input
-                          value={sku.description}
-                          onChange={(event) =>
-                            setNewSkus((prev) =>
-                              prev.map((entry, i) =>
-                                i === index
-                                  ? { ...entry, description: event.target.value }
-                                  : entry
-                              )
-                            )
-                          }
-                          className="w-full rounded-2xl border border-slate-800/80 bg-slate-950/70 px-4 py-3 text-sm text-slate-100 focus:border-teal-400 focus:outline-none"
-                          placeholder="Optional"
-                        />
-                      </label>
-                      <label className="flex flex-col gap-2 text-sm font-medium text-slate-300 md:col-span-2">
-                        <span>Specs (JSON)</span>
-                        <textarea
-                          value={sku.specs}
-                          onChange={(event) =>
-                            setNewSkus((prev) =>
-                              prev.map((entry, i) =>
-                                i === index ? { ...entry, specs: event.target.value } : entry
-                              )
-                            )
-                          }
-                          className="min-h-[90px] w-full rounded-2xl border border-slate-800/80 bg-slate-950/70 px-4 py-3 text-sm text-slate-100 focus:border-teal-400 focus:outline-none"
-                          placeholder='{"power": "220V"}'
-                        />
-                      </label>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-
             {addCategoryError && (
               <div className="mt-6 rounded-2xl border border-rose-500/40 bg-rose-500/10 px-4 py-3 text-sm text-rose-200">
                 {addCategoryError}
@@ -1097,7 +1202,7 @@ export default function DevicesClient({
               <Button variant="ghost" onClick={closeAddCategory} disabled={isSavingCategory}>
                 Cancel
               </Button>
-              <Button onClick={handleCreateCategory} disabled={isSavingCategory}>
+              <Button onClick={handleAddCategory} disabled={isSavingCategory}>
                 {isSavingCategory ? "Saving..." : "Create category"}
               </Button>
             </div>
